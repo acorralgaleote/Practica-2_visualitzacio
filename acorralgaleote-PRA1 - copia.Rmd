@@ -1,0 +1,482 @@
+---
+title: 'Visualització de dades: PRAC2 - Creació de la visualització i lliurament del projecte'
+author: "Anna Corral Galeote"
+date: "26 Juny 2023"
+output:
+  html_document:
+    highlight: default
+    number_sections: yes
+    theme: cosmo
+    toc: yes
+    toc_depth: 2
+    includes:
+      in_header: 05.584-PEC-header.html
+  word_document: default
+  pdf_document:
+    highlight: zenburn
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+******
+# Introducció
+******
+
+Comencem carregant les llibreries que necessitarem:
+```{r}
+if (!require('ggplot2'))install.packages('ggplot2'); library('ggplot2')
+if (!require('dplyr')) install.packages('dplyr'); library('dplyr')
+if (!require('plotly')) install.packages('plotly'); library('plotly')
+if (!require('plyr')) install.packages('plyr'); library('plyr')
+if (!require('corrplot')) install.packages('corrplot'); library('corrplot')
+if (!require('Matrix')) install.packages('Matrix'); library('Matrix')
+if(!require('reshape2')) install.packages('reshape2');library(reshape2)
+if (!require('rpart')) install.packages('rpart'); library('rpart')
+if (!require('rpart.plot')) install.packages('rpart.plot'); library('rpart.plot')
+```
+
+El primer pas és carregar el dataset amb el que treballarem. L'anomenarem *df_heart*
+```{r}
+df_heart <- read.csv("heart.csv", encoding = 'UTF-8')
+```
+
+Carreguem les primeres dades per comprovar que tot està en ordre
+```{r}
+head(df_heart)
+```
+
+Seguidament, carreguem l'estructura de dades que presenta el nostre dataset per comprovar que el que hem anat dient previament variable per variable és correcte
+```{r}
+str(df_heart)
+```
+
+Mostrem la informació estadística bàsica de cada variable
+```{r}
+summary(df_heart)
+```
+
+Dins les variables binàries, tenim la de *HeartDisease* i la de *FastingBS*. Calcularem llavors, dins del nostre dataset el percentatge de cadascuna d'elles. 
+
+Percentatge de persones amb alguna malaltia cardiovascular:
+```{r}
+heart_disease <- sum(df_heart$HeartDisease==1)/nrow(df_heart)
+percentatge_disease <- heart_disease*100
+percentatge_disease
+```
+
+Percentatge restant, és a dir persones que no están malaltes:
+```{r}
+normal_heart <- sum(df_heart$HeartDisease==0)/nrow(df_heart)
+percentatge_normal <- normal_heart*100
+percentatge_normal
+```
+
+Percentatge de persones que tenen un FastingBS > 120 i que per tant, tenen diabetis:
+```{r}
+fbs <- sum(df_heart$FastingBS==1)/nrow(df_heart)
+fbs_percentatge <- fbs*100
+fbs_percentatge
+```
+
+Persones que no tenen diabetis:
+```{r}
+no_fbs <- sum(df_heart$FastingBS==0)/nrow(df_heart)
+no_fbs_percentatge <- no_fbs*100
+no_fbs_percentatge
+```
+
+Ara, abans de començar amb la neteja de les dades, anem a crear una visualització de les dades en termes generals per poder treure les primeres conclusions sobre valors *outliers* i valors no reals.
+
+La primera manera que mostrarè és mitjançant un *geom_histogram*. M'he ajudat del següent enllaç web: https://stackoverflow.com/questions/13035834/plot-every-column-in-a-data-frame-as-a-histogram-on-one-page-using-ggplot
+On explica que amb la funció *melt* de la llibrería *reshape2* podem fer una única figura que ens mostri tots els histrogrames de les diferents variables
+```{r}
+hd <- melt(df_heart[,-c(12)])
+```
+
+```{r}
+ggplot(hd, aes(x=value))+
+  facet_wrap(~variable,scales= "free_x")+
+  geom_histogram()
+```
+
+Si amb la informació que ens donen els histogrames no en tenim prou podem representar-ho amb l'ajuda d'una funció que ens representarà d'una manera potser més visual les dades obtingudes. 
+
+Primer, creem la funció que ens recorrerà una llista de gràfics que posteriorment graficarà:
+```{r}
+plot_data <- function(data){
+  plots <- list()
+  
+  names <- colnames(data[1:12])
+  
+  for (i in 1:length(names)){
+    
+    fig <- plot_ly(x = data[,i],
+                   type = "histogram",
+                   histnorm = "count",
+                   name = names[i])
+    
+    plots[[i]] <- fig
+  }
+  
+  representacio <- subplot(plots, nrows = 4)
+  representacio
+}
+```
+
+```{r}
+plot_data(df_heart)
+```
+
+Per si amb la primera representació no ens havia quedat clar, tenim aquesta segona per poder comparar i poder observar que hi ha valors que no ens haurien d'aparèixer perquè, per exemple, la variable *RestingBP* no pot tenir el valor de 0. Ens encarregarem més endevant d'aquestes incongruències. 
+
+Ara, per acabar de confirmar el que em observat amb els histogrames, farem la mateixa representació però amb boxplots 
+```{r}
+ggplot(hd, aes(x=value))+
+  facet_wrap(~variable,scales= "free_x")+
+  geom_boxplot()
+```
+
+D'aquestes representacions, el que podem observar són els outliers que presenten algunes dades amb molta claredat ja que veiem on està el valor mig, el màxim i el mínim. Podem tornar a observar certs valors definits amb el 0, que comentàvem anteriorment que no pot ser real.
+
+Un cop ens hem fet una idea general de com es distribueix el nostre conjunt, passem a la següent fase que és la neteja i el modelatge de les dades
+
+******
+# Neteja i modelatge de les dades
+******
+
+Per evitar possibles errors i poder retrocedir fàcilment en el cas que ho necessitèssim vaig a crear una còpia de les dades *df_heart* que es dirà *df_clean* i és on plasmarem tota aquesta neteja. 
+```{r}
+df_clean <- df_heart
+```
+
+## Detecció de valors en blanc i valors nuls
+
+El primer que fem és comprovar si el dataset conté valors en blanc
+```{r}
+colSums(df_clean=="")
+```
+
+Ara comprovem que no contingui valors nuls 
+```{r}
+colSums(is.na(df_clean))
+```
+
+Observem que no tenim ni valors nuls ni valors en blanc, fet que ens facilita una mica la feina i passem a comprovar els duplicats.
+
+## Detecció de valors duplicats
+
+```{r}
+sum(duplicated(df_clean))
+```
+
+Observem que tampoc tenim valors duplicats. 
+
+## Detecció d'outliers
+
+Tal i com hem pogut observar en les representacions del dataset, hi ha certs paràmetres numèrics que presenten valors outliers. Per poder-nos assegurar, el que farem serà graficar individualment cadascún d'aquests per poder extreure'n conclusions. La representació la farem mitjançant una funció (molt semblant a l'anterior) que ens grafiqui en forma de boxplot la variable indicada. 
+
+Primer de tot, definim aquesta funció i després anirem cridant quina variable volem que ens grafiqui segons ens convingui. 
+```{r}
+analisis_outliers <- function(variable, name){
+  
+  # Creamos el gráfico
+  fig <- plot_ly(type = 'box')
+  
+  # Representamos la variable
+  fig <- fig %>% add_boxplot(y = variable,
+                             jitter = 0.3, 
+                             pointpos = -1.8, 
+                             boxpoints = 'all',
+                             marker = list(color = 'rgb(23,32,42)'),
+                             line = list(color = 'rgb(23,32,42)'),
+                             name = name)
+  
+  fig <- fig %>% layout(title = paste("Análisis de Outliers de la variable", name))
+  
+  # Obtenemos los posibles outliers:
+  outliers <- boxplot.stats(variable)$out
+  
+  return(list(outliers=outliers, fig=fig))
+}
+```
+
+Graficarem segons 2 grups; primer farem els que segons les representacions anteriors no presenten outliers i després graficarem aquells que sí necessiten la detecció d'aquests valors. 
+
+Segons els gràfics anteriors, de les 5 variables numèriques, aquelles variables que no tenen valors outliers són *Age* i *MaxHR*, per tant anem a visualitzar-los i comprovar el que ja suposem.
+
+**Variable Age**
+```{r}
+analisis = analisis_outliers(df_clean$Age,"Age")
+analisis$fig
+```
+
+Podem observar que le rang d'edats és d'uns 28 al 78 anys i que en el boxplot que no hi ha cap variable que pugui ser un outlier. 
+
+**Variable MaxHR** 
+```{r}
+analisis = analisis_outliers(df_clean$MaxHR,"MaxHR")
+analisis$fig
+```
+
+Tornem a observar que les dades es troben dins dels paràmetres que marca el boxplot i que per tant, no observem outliers. El rang de valors d'aquesta variable es troba entre els 60 i 200, com hem definit anteriorment en la descripció de cada variable, per tant és correcte.
+
+Passem ara a observar aquelles variables que ens sembla que poden tenir outliers; com són *Oldpeak*, *Cholesterol* i *RestingBP*. 
+
+**Variable Oldpeak**
+```{r}
+analisis = analisis_outliers(df_clean$Oldpeak,"Oldpeak")
+analisis$fig
+```
+
+Veiem que el rang de valors d'aquesta variable oscil·la entre els -2.6 als 6.2. Segons el que veiem a la figura, sí que podríem entendre que hi ha valors que són outliers però anem a observar quins valors prenen aquests fent: 
+```{r}
+analisis$outliers
+```
+
+Veiem que són valors que gairebé no surten de la norma i podem arribar a saber investigant per internet que els valors són completament vàlids perquè poden arribar a pendre aquesta mesura. Com sñon valors possibles dins d'aquesta variable, opto per no eliminar-los per no recòrrer a algun error que impliqui la falta de dades. 
+
+**Variable Cholesterol**
+```{r}
+analisis = analisis_outliers(df_clean$Cholesterol, "Cholesterol")
+analisis$fig
+```
+
+D'aquest gràfic observem que el rang on es troben la majoria de les variables és de 85 a 410. Observem uns outliers tant per la part inferior com en la part superior. Si investiguem per internet, podem trobar-nos informació que ens diu que és impossible que els valors del colesterol siguin 0, per tant aquests els haurem d'eliminar. Per contra, els valors que ens trobem a la part superior, són valors molt elevats però totalment possibles en aquelles persones que tinguin un colesterol molt elevat. Per tant, opto per no eliminar-los per no errar en falta d'informació que és verídica.
+
+Anem a observar quins són aquests valors fent:
+```{r}
+analisis$outliers
+```
+
+Observem el que explicàvem dels 0. Per tant, com n'hi ha tants que són 0, no els eliminem, sinó que passem a imputar-los a la mitja. 
+```{r}
+df_clean$Cholesterol[df_clean$Cholesterol==0] <- NA
+
+df_clean$Cholesterol[is.na(df_clean$Cholesterol)] <- mean(df_clean$Cholesterol,na.rm=T)
+```
+
+Tornem a graficar per veure com ha evolucionat el gràfic un cop hem donat el valor de la mitja als que eren 0. 
+```{r}
+analisis = analisis_outliers(df_clean$Cholesterol, "Cholesterol")
+analisis$fig
+```
+
+**Variable RestingBP**
+```{r}
+analisis = analisis_outliers(df_clean$RestingBP, "RestingBP")
+analisis$fig
+```
+
+Observem que el rang de valors d'aquesta variable està comprès entre els 80 i els 200. Podríem pensar que el 200 és un valor outlier però és un resultat totalment factible així que el que farem és centrar-nos en els valors 0 ja que és impossible que els resultats d'un electrocardiograma en repòs sigui 0. Observem els outliers fent:
+```{r}
+analisis$outliers
+```
+
+Després de visualitzar quins valors tenim considerats com a outliers, veiem que hi ha un únic valor 0 i, per tant, passem a eliminar-lo. 
+```{r}
+df_clean <- df_clean[-which(df_clean$RestingBP %in% 0),]
+```
+
+Tornem a graficar la distribució de la variable per veure quin és el resultat després dels canvis.
+```{r}
+analisis = analisis_outliers(df_clean$RestingBP, "RestingBP")
+analisis$fig
+```
+
+### Interpretació dels resultats obtinguts en la neteja de dades
+
+Un cop hem eliminat/imputat els valors que eren outliers, visualitzem l'estructura del conjunt de dades un altre cop per veure com han evolucionat i com han afectat els nostres canvis.
+```{r}
+str(df_clean)
+```
+
+L'estructura de dades en diu que prèviament teniem 918 observacions i ara en tenim 917. Fent un *summary* podem observar com el valor mínim de la variable *RestingBP* ha canviat de 0.0 a 80.0. També, com a la variable *Cholesterol* ara trobem que tant els valors mínims/màxims com els quartils han patit un canvi degut a la redistribució de les dades i a la imputació dels 0 a la mitja. 
+```{r}
+summary(df_clean)
+```
+
+Per últim, tornem a graficar els valors en una única figura per visualitzar aquests canvis
+```{r}
+plot_data(df_clean)
+```
+
+I també ho fem amb els boxplots
+```{r}
+hd2 <- melt(df_clean[,-c(12)])
+
+ggplot(hd2, aes(x=value))+
+  facet_wrap(~variable,scales= "free_x")+
+  geom_boxplot()
+```
+
+
+## Correlació de les variables
+
+El que farem ara que tenim el nostre dataset "net" és estudiar la correlació que hi ha entre cadascuna de les variables. 
+
+Per fer-ho, necessitem primer convertir les que anteriorment hem classificat com variables categòriques a numèriques; que són les variables *Sex*, *ChestPainType*, *FastingBS*, *RestingECG*, *ExerciseAngina* i *HeartDisease*. Aquesta última no cal que la convertim perquè és la única variable binària que tenim en el nostre conjunt de dades i ja està definida numèricament. 
+
+Abans de fer la conversió, tornarem a crear un nou conjunt de dades a partir del *df_clean* que anomenarem *df_corr*
+```{r}
+df_corr <- df_clean
+```
+
+
+Comencem per la variable **Sex** on 0 equivaldrà al sexe masculí i l'1 al femení. 
+```{r}
+df_corr$Sex[df_corr$Sex=='M']<-0
+df_corr$Sex[df_corr$Sex=='F']<-1
+df_corr$Sex <- as.numeric(as.character(df_corr$Sex))
+```
+
+Passem a la variable **RestingECG** on he considerat que tenir un electrocardiograma normal en repós és el 0, on tenir anormalitats (ST) és l'1 i on tenir hipertròfia ventricular (LVH) és el 2. 
+```{r}
+df_corr$RestingECG[df_corr$RestingECG=='Normal']<-0
+df_corr$RestingECG[df_corr$RestingECG=='ST']<-1
+df_corr$RestingECG[df_corr$RestingECG=='LVH']<-2
+df_corr$RestingECG <- as.numeric(as.character(df_corr$RestingECG))
+```
+
+Amb la variable **ExerciseAngina** he considerat que tenir una angina de pit causada per l'exercici és l'1 (Y) i que no tenir-la és el 0 (N)
+```{r}
+df_corr$ExerciseAngina[df_corr$ExerciseAngina=='Y']<-1
+df_corr$ExerciseAngina[df_corr$ExerciseAngina=='N']<-0
+df_corr$ExerciseAngina <- as.numeric(as.character(df_corr$ExerciseAngina))
+```
+
+Amb la variable **ST-Slope** he considerat que quan el pic és baix (Down) sigui 0, quan és pla (Flat) sigui 1 i quan és alt (Up) sigui 2
+```{r}
+df_corr$ST_Slope[df_corr$ST_Slope=='Down']<-0
+df_corr$ST_Slope[df_corr$ST_Slope=='Flat']<-1
+df_corr$ST_Slope[df_corr$ST_Slope=='Up']<-2
+df_corr$ST_Slope <- as.numeric(as.character(df_corr$ST_Slope))
+```
+
+Per últim, amb els tipus de dolor al pit, **ChestPainType** he considerat que l'asimptomàtic (ASY) sigui 0, els que no tenen dolor (NAP) sigui l'1, les angines atípiques (ATA) sigui el 2 i la típica angina (TA) sigui el 3. 
+```{r}
+df_corr$ChestPainType[df_corr$ChestPainType=='ASY']<-0
+df_corr$ChestPainType[df_corr$ChestPainType=='NAP']<-1
+df_corr$ChestPainType[df_corr$ChestPainType=='ATA']<-2
+df_corr$ChestPainType[df_corr$ChestPainType=='TA']<-3
+df_corr$ChestPainType <- as.numeric(as.character(df_corr$ChestPainType))
+```
+
+Un cop tenim totes les variables categòriques com a numèriques, el que fem és un gràfic que ens mostri la correlació entre cadascuna de les diferents variables.
+```{r}
+corrplot(cor(df_corr[1:12]), type="lower", method = "number")
+```
+
+El que obtenim d'aquest gràfic és el que ja hem anat observant anteriorment, que existeix una relació entre les variables d'estudi i entre patir una malaltia cardiovascular. A més a més, les conclusions que podem treure són: les variables amb una correlació més alta són *HeartDisease* i *ExerciseAngina* amb el valor de 0.5 seguit de les variables *Oldpeak* i *ExerciseAngina* amb un valor de 0.41 i seguit de les variables *HeartDisease* i *Oldpeak* amb 0.40. 
+
+******
+# Realització d'una anàlisi exploratòria
+******
+
+Ara, el que farem és estudiar la relació que té cadascuna de les variables amb la variable explicativa principal que és la de HeartDisease. Per fer-ho, farem com al primer apartat i crearem una funció que es diu *analisis_expl*. El primer pas és analitzar la freqüència amb la que apareix la variable *HeartDisease* per comparar-ho amb la que li diguem, però que en la funció és diu *var_comp*. Seguidament li especifiquem els valors a comparar i creem un dataframe amb l'estructura resultant per després poder graficar-ho. 
+```{r}
+analisis_expl <- function(var_comp){
+  
+  frec <-count(df_clean, c(var_comp, "HeartDisease"))
+  
+  NoHD <-subset(frec, HeartDisease==0)
+  
+  variable <- NoHD[NoHD$var_comp,]
+  variable <- NoHD[,1]
+  
+  NoHD <- NoHD[,3]
+  
+  YesHD <- subset(frec, HeartDisease==1)
+  YesHD <- YesHD[,3]
+  
+  data <- data.frame(variable, NoHD, YesHD)
+  
+  fig <- plot_ly(data, x = variable, y=NoHD, type = 'bar', name = 'NoHeartDisease')
+  fig <- fig %>% add_trace(y = YesHD, name = 'HeartDisease')
+  fig <- fig %>% layout(yaxis = list(title = 'Count'), barmode = 'group')
+  fig
+}
+```
+
+(Se que alguna cosa no és correcte en la funció perquè hi ha certes variables que em dona error al graficar-les, per exemple "Age" i no se com fer-ho millor). 
+
+**Variable Sex**
+
+El que podem observar és com hi ha una diferència molt gran de mostres recollides entre homes i dones. Al haver-hi més mostres d'homes, ens trobem amb que la majoria d'ells tenen malalties cardiovasculars a diferència de les dones.
+```{r}
+analisis_expl("Sex")
+```
+
+**Variable ChestPainType**
+
+Observem que la majoria de les observacions dutes a terme han estat casualment sobre persones asimptomàtiques i que per tant, són el percentatge més alt de grup de persones que pateixen malalties cardiovasculars. 
+```{r}
+analisis_expl("ChestPainType")
+```
+
+**Variable FastingBS**
+
+Les conclusions que extraiem d'aquest gràfic és que tenir un percentatge de sucre en sang elevat pot estar altament relacionat amb l'aparició de malalties cardiovasculars.
+```{r}
+analisis_expl("FastingBS")
+```
+
+**Variable RestingECG**
+
+Aquí el que veiem és que més del 50% de les persones que es realitzen les proves per saber si pateixen alguna malaltia cardiovascular són realment casos positius. Per tant, diem que la majoria de les persones que es testejen són aquelles que tenen un alt risc. 
+```{r}
+analisis_expl("RestingECG")
+```
+
+**Variable ExerciseAngina**
+
+Observem que és més probable patir una malaltia cardiovascular en aquelles persones que tenen angina. 
+```{r}
+analisis_expl("ExerciseAngina")
+```
+
+**Variable ST_Slope**
+
+Podem observar com les persones amb pendent de tipus *Flat* són aquelles amb més risc de patir una malaltia cardiovascular.
+```{r}
+analisis_expl("ST_Slope")
+```
+
+**Variable Age**
+
+Com he especificat abans, no puc graficar-ho seguint la funció però ho puc fer mitjançant un *ggplot* per tenir una idea aproximada de com es distribueix. 
+
+Observem que la majoría de les observacions més favorables a patir malalties cardiovasculars són aquelles que pertanyen als grups d'edat d'entre els 50 i el 78 anys, per tant es troben dins dels grups de tercera edat i maduresa. 
+```{r}
+ggplot(data=df_corr, aes(x=Age, fill=as.factor(HeartDisease)))+geom_bar(position = "fill")+
+  ggtitle("Relació entre les variables Age i HeartDisease")+
+  xlab("Grup d'edats")+
+  ylab("Proporció de persones amb HeartDisease segons Age")
+```
+
+## Conclusions de l'anàlisi exploratòria
+
+- Pel que fa a l'edat, els grups establerts anteriorment com **Maduresa** i **Tercera edat** són els més favorables alhora de patir una malaltia cardiovascular. 
+
+- Pel que fa al sexe, els homes són més propensos a patir aquestes malalties que no pas les dones. 
+
+- Pel que fa al dolor de pit, les persones que són asimptomàtiques són més propenses a patir una malaltia cardiovascular. 
+
+- Pel que fa als nivell de sucre en sang, aquelles persones que el tinguin elevat seràn més propenses a patir una malaltia cardiovascular. 
+
+- Aquelles persones que tenen una anomalía a les ones d'un electrocardiograma tenen més probabilitats de patir una malaltia cardiovascular. 
+
+- Tenen més probabilitats de tenir una malaltia cardiovascular les persones que tenen alguna angina produida per l'exercici. 
+
+- Les persones que tenen una pendent de tipus Flat al segment ST del ST_Slope tenen moltes més probabilitats de patir una malaltia cardiovascular. 
+
+******
+# Bibliografia
+******
+
+**Gràfics amb ploty i funcions**
+https://plotly.com/r/bar-charts/
+https://plotly.com/r/filled-area-plots/
+
+Apunts de l'assignatura 
